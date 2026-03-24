@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: secure-app-service
+  namespace: secure-app-ns
+  labels:
+    app: secure-app
+spec:
+  type: LoadBalancer
+  selector:
+    app: secure-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+      name: http

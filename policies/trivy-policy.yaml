@@ -1,0 +1,20 @@
+# Trivy security scanning policy configuration
+# This policy defines the severity threshold for the CI/CD pipeline.
+# The pipeline will fail (exit code 1) if any HIGH or CRITICAL vulnerabilities are found.
+
+severity:
+  - CRITICAL
+  - HIGH
+
+exit-code: 1
+
+# Ignore unfixed vulnerabilities (optional — set to true if you only want actionable results)
+ignore-unfixed: false
+
+# Output format for the scan results
+format: table
+
+# Scan target types
+security-checks:
+  - vuln
+  - config

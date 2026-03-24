@@ -1,0 +1,21 @@
+# VULNERABLE Dockerfile - DO NOT use in production
+# This Dockerfile intentionally uses insecure practices for educational purposes.
+#
+# Issues:
+# 1. Uses an outdated Node.js 14 base image with many known CVEs
+# 2. Runs the application as root (default user in the container)
+# 3. No health check defined
+# 4. Copies everything including unnecessary files
+# 5. Does not pin dependency versions in the base image
+
+FROM node:14
+
+WORKDIR /app
+
+COPY . .
+
+RUN npm install
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]

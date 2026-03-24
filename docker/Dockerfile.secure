@@ -1,0 +1,38 @@
+# SECURE Dockerfile - Production-ready best practices
+#
+# Security measures applied:
+# 1. Uses a minimal Alpine-based image to reduce attack surface
+# 2. Creates and runs as a non-root user
+# 3. Includes a health check for container orchestration
+# 4. Uses multi-stage-friendly layer ordering for efficient caching
+# 5. Only copies necessary files
+
+FROM node:18-alpine
+
+# Create a non-root user and group
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app
+
+# Copy dependency manifest first for better layer caching
+COPY app/package.json .
+
+# Install production dependencies only
+RUN npm install --only=production && npm cache clean --force
+
+# Copy application source code
+COPY app/server.js .
+
+# Change ownership of app files to non-root user
+RUN chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
+
+EXPOSE 3000
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+
+CMD ["node", "server.js"]
