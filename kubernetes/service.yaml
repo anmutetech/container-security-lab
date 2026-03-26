@@ -1,14 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: secure-app-service
-  namespace: secure-app-ns
+  name: vaultpay-service
+  namespace: vaultpay-ns
   labels:
-    app: secure-app
+    app: vaultpay
+    compliance: pci-dss
 spec:
   type: LoadBalancer
   selector:
-    app: secure-app
+    app: vaultpay
   ports:
     - protocol: TCP
       port: 80

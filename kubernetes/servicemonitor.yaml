@@ -1,19 +1,19 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: secure-app-monitor
-  namespace: secure-app-ns
+  name: vaultpay-monitor
+  namespace: vaultpay-ns
   labels:
-    app: secure-app
+    app: vaultpay
     release: monitoring
 spec:
   selector:
     matchLabels:
-      app: secure-app
+      app: vaultpay
   endpoints:
     - port: http
       path: /metrics
       interval: 15s
   namespaceSelector:
     matchNames:
-      - secure-app-ns
+      - vaultpay-ns

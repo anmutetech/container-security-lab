@@ -1,20 +1,41 @@
-# VULNERABLE Dockerfile - DO NOT use in production
-# This Dockerfile intentionally uses insecure practices for educational purposes.
-#
-# Issues:
-# 1. Uses an outdated Node.js 14 base image with many known CVEs
-# 2. Runs the application as root (default user in the container)
-# 3. No health check defined
-# 4. Copies everything including unnecessary files
-# 5. Does not pin dependency versions in the base image
+# =============================================================================
+# VULNERABLE Dockerfile — DO NOT use in production
+# =============================================================================
+# This Dockerfile intentionally violates multiple PCI-DSS requirements.
+# It exists purely for educational purposes so students can see what Trivy
+# catches and understand why each practice is dangerous.
+# =============================================================================
 
+# BAD: Node 14 reached end-of-life in April 2023. It no longer receives
+# security patches. This image contains hundreds of known CVEs in its
+# bundled OS packages (OpenSSL, zlib, glibc, etc.).
+# PCI-DSS Requirement 6.3.3: "Patches/updates are installed within a defined
+# timeframe." Using an EOL runtime means patches will NEVER be available.
 FROM node:14
 
+# BAD: No non-root user is created. The application will run as root.
+# If an attacker exploits the application, they gain root-level access
+# inside the container — and potentially to the host via privilege escalation.
+# PCI-DSS Requirement 7.1: "Limit access to system components and cardholder
+# data to only those individuals whose job requires such access."
 WORKDIR /app
 
+# BAD: Copies EVERYTHING from the build context, including .env files,
+# documentation, test fixtures, and any secrets that happen to be in the repo.
+# PCI-DSS Requirement 3.4: "Render PAN unreadable anywhere it is stored."
+# Copying secrets or cardholder data into the image layer is a direct violation.
 COPY . .
 
+# BAD: Installs all dependencies including devDependencies (test frameworks,
+# linters, debuggers). These add unnecessary code — and unnecessary CVEs.
+# PCI-DSS Requirement 2.2.5: "Remove all unnecessary functionality."
 RUN npm install
+
+# BAD: No HEALTHCHECK instruction. Kubernetes and Docker have no way to know
+# if the application inside the container is actually working. A crashed
+# process or a deadlocked event loop will go undetected.
+# PCI-DSS Requirement 10.6: "Review logs and security events regularly."
+# Without health checks, failures go unnoticed.
 
 EXPOSE 3000
 

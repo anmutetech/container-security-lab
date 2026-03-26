@@ -1,29 +1,50 @@
-# Container Security Scanning Lab
+# Container Security Scanning Lab -- VaultPay Payment Gateway
 
-## Overview
+## The Scenario
 
-This hands-on lab teaches you how to integrate container security scanning into a CI/CD pipeline using **Trivy**, an open-source vulnerability scanner. You will experience a real-world workflow where a pipeline fails due to vulnerabilities in a Docker image, then fix the issue by switching to a hardened Dockerfile and watch the pipeline pass and deploy your application to Amazon EKS.
+You have just joined **VaultPay**, a fast-growing payment processing startup that handles credit card transactions for thousands of online merchants. Business is booming -- but the security team just got some bad news.
 
-By the end of this lab, you will understand:
+Last week, an external PCI-DSS auditor performed a routine assessment of VaultPay's infrastructure. The findings were alarming:
 
-- Why container images contain vulnerabilities and how to detect them
-- How to read and interpret a Trivy vulnerability report
-- The difference between a vulnerable and a secure Dockerfile
-- How to enforce security gates in a GitHub Actions CI/CD pipeline
-- How to deploy a scanned, secure container to Kubernetes on AWS EKS
+- **47 known vulnerabilities (CVEs)** were found in the container images running in production.
+- The payment gateway container was **running as the root user**, meaning a single exploit could give an attacker full control of the container -- and potentially the host machine.
+- There was **no vulnerability scanning** anywhere in the CI/CD pipeline. Developers could push any image to production without any security checks.
+- **No health checks** were configured, so crashed containers went undetected for hours.
+
+The auditor's conclusion: **VaultPay is not PCI-DSS compliant.** The company has **30 days to fix these issues or lose its payment processing license.** Without that license, VaultPay cannot process credit card transactions, and the business shuts down.
+
+As the new DevSecOps engineer, your job is to integrate **Trivy** -- an open-source container vulnerability scanner -- into the CI/CD pipeline so that vulnerable containers are automatically blocked from reaching production. You will also harden the Dockerfile and Kubernetes deployment to meet PCI-DSS requirements.
 
 ---
 
-## What Gets Created
+## What You Will Learn
 
-| Resource | Description |
-|----------|-------------|
-| GitHub Actions workflow | Automated pipeline that scans images with Trivy before deploying |
-| Express.js application | Simple Node.js API with health, products, and metrics endpoints |
-| Vulnerable Dockerfile | Intentionally insecure image using `node:14`, running as root |
-| Secure Dockerfile | Hardened image using `node:18-alpine`, non-root user, health check |
-| Kubernetes manifests | Namespace, Deployment (2 replicas), LoadBalancer Service, ServiceMonitor |
-| Trivy policy | Security policy that fails the pipeline on HIGH/CRITICAL CVEs |
+- Why container images contain vulnerabilities and how attackers exploit them
+- How to read and interpret a Trivy vulnerability scan report
+- The difference between a vulnerable Dockerfile and a secure, PCI-DSS-compliant one
+- How to enforce security gates in a GitHub Actions CI/CD pipeline
+- How to deploy a scanned, hardened container to Kubernetes on AWS EKS
+- How container security maps to real PCI-DSS compliance requirements
+- How Prometheus metrics provide observability into your payment gateway
+
+---
+
+## Architecture
+
+This diagram shows the complete flow from code to production. The Trivy scan acts as a security gate -- if it finds vulnerabilities, the image never reaches DockerHub or EKS.
+
+```
+                        PASS                          PASS
+ GitHub Repo -----> GitHub Actions -----> Trivy Scan -------> DockerHub -----> EKS Cluster
+   (push)          (build image)        (security gate)     (push image)    (deploy pods)
+                                              |
+                                              | FAIL (CVEs found)
+                                              v
+                                        Pipeline Blocked
+                                     (image never deployed)
+```
+
+Think of Trivy like airport security. Every container (passenger) must go through the scanner before boarding the plane (production). If the scanner detects something dangerous, that container is stopped right there.
 
 ---
 
@@ -31,21 +52,47 @@ By the end of this lab, you will understand:
 
 Before starting this lab, make sure you have the following:
 
-1. **EKS cluster running** — The `migration-eks-cluster` in `us-east-1` should already be provisioned from the [cloud-migration-infra](https://github.com/anmutetech/cloud-migration-infra) lab.
-2. **DockerHub account** — Sign up at [https://hub.docker.com](https://hub.docker.com) if you do not have one.
-3. **kubectl configured** — Your local `kubectl` should be pointed at the EKS cluster:
+1. **EKS cluster running** -- The `migration-eks-cluster` in `us-east-1` should already be provisioned from the [cloud-migration-infra](https://github.com/anmutetech/cloud-migration-infra) lab.
+2. **DockerHub account** -- Sign up at [https://hub.docker.com](https://hub.docker.com) if you do not have one.
+3. **kubectl configured** -- Your local `kubectl` should be pointed at the EKS cluster:
    ```bash
    aws eks update-kubeconfig --name migration-eks-cluster --region us-east-1
    ```
-4. **AWS CLI** — Installed and configured with credentials that have EKS access.
-5. **Git** — Installed locally.
-6. **GitHub account** — You will fork this repo and configure secrets.
+4. **AWS CLI** -- Installed and configured with credentials that have EKS access.
+5. **Docker** -- Installed locally for building images (optional, the pipeline builds in the cloud).
+6. **Git** -- Installed locally.
+7. **GitHub account** -- You will fork this repo and configure secrets.
 
 ---
 
-## Lab Steps
+## The Problem: Why VaultPay Failed the Audit
 
-### Step 1: Fork and Clone the Repository
+Before we fix anything, let's understand what the auditor found. Here is the Dockerfile that VaultPay was using in production:
+
+```dockerfile
+FROM node:14        # End-of-life since April 2023 -- no more security patches!
+WORKDIR /app
+COPY . .            # Copies EVERYTHING -- including secrets and test files
+RUN npm install     # Installs dev dependencies too -- unnecessary attack surface
+EXPOSE 3000
+CMD ["node", "server.js"]
+# No USER instruction -- runs as root
+# No HEALTHCHECK -- crashes go undetected
+```
+
+**What is wrong with this Dockerfile?**
+
+| Problem | Why It Matters | Real-World Analogy |
+|---------|---------------|-------------------|
+| `node:14` base image | End-of-life. Hundreds of known vulnerabilities that will never be patched. | Driving a car that has been recalled but never repaired. |
+| Runs as root | If an attacker breaks in, they have full admin access to the container. | Giving every visitor to your office the master key to every room. |
+| `COPY . .` | Copies secrets, tests, and docs into the image. | Putting your diary, tax returns, and passwords in your checked luggage. |
+| `npm install` (all deps) | Dev tools in production increase attack surface. | Leaving your construction tools lying around after the building is done. |
+| No HEALTHCHECK | Crashed containers sit there broken with no one noticing. | A security guard who fell asleep -- nobody checks if they are still awake. |
+
+---
+
+## Step 1: Fork and Clone
 
 1. Go to this repository on GitHub and click **Fork** to create your own copy.
 2. Clone your fork locally:
@@ -56,58 +103,43 @@ Before starting this lab, make sure you have the following:
 
 ---
 
-### Step 2: Explore the Dockerfiles
+## Step 2: Explore the Vulnerable vs Secure Dockerfiles
 
-Before running anything, take a few minutes to compare the two Dockerfiles. Understanding the differences is the core learning objective.
+This is the most important step in the lab. Take time to read both Dockerfiles and understand the differences.
 
-#### The Vulnerable Dockerfile (`docker/Dockerfile.vulnerable`)
+Open the two files side by side:
 
-Open the file and note these problems:
+| Line | Vulnerable (`docker/Dockerfile.vulnerable`) | Secure (`docker/Dockerfile.secure`) |
+|------|---------------------------------------------|-------------------------------------|
+| Base image | `FROM node:14` (EOL, hundreds of CVEs) | `FROM node:18-alpine` (current LTS, minimal packages) |
+| User | Runs as root (default) | `USER vaultpay` (dedicated non-root user) |
+| File copy | `COPY . .` (copies everything) | `COPY app/server.js .` (only what is needed) |
+| Dependencies | `npm install` (all deps) | `npm install --only=production` (production only) |
+| Health check | None | `HEALTHCHECK` with wget to `/health` |
+| Cache cleanup | None | `npm cache clean --force` |
 
-```dockerfile
-FROM node:14        # Old base image — Node 14 is end-of-life and contains hundreds of known CVEs
-WORKDIR /app
-COPY . .            # Copies everything, including files that should not be in the image
-RUN npm install     # Installs all dependencies, including devDependencies
-EXPOSE 3000
-CMD ["node", "server.js"]
-```
-
-**What makes it insecure:**
-
-- **Outdated base image (`node:14`):** End-of-life images no longer receive security patches. Trivy will report many CRITICAL and HIGH vulnerabilities in the OS packages and libraries bundled in this image.
-- **Runs as root:** The container process runs as the root user by default. If an attacker gains code execution inside the container, they have root privileges.
-- **No health check:** Kubernetes (or Docker) cannot determine if the application inside the container is actually healthy.
-- **Copies unnecessary files:** The `COPY . .` command may include secrets, documentation, and other files that bloat the image and increase the attack surface.
-
-#### The Secure Dockerfile (`docker/Dockerfile.secure`)
-
-```dockerfile
-FROM node:18-alpine                     # Minimal base image — Alpine has far fewer packages and CVEs
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup   # Non-root user
-WORKDIR /app
-COPY app/package.json .
-RUN npm install --only=production && npm cache clean --force  # Production deps only
-COPY app/server.js .
-RUN chown -R appuser:appgroup /app
-USER appuser                            # Run as non-root
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
-CMD ["node", "server.js"]
-```
-
-**What makes it secure:**
-
-- **Alpine-based image:** Contains only essential packages, dramatically reducing the number of potential vulnerabilities.
-- **Non-root user:** Even if an attacker exploits the application, they cannot escalate to root inside the container.
-- **Health check:** The orchestrator can detect and restart unhealthy containers automatically.
-- **Minimal file copy:** Only the files needed to run the application are included.
-- **Production dependencies only:** Dev dependencies are excluded, reducing the attack surface further.
+**Key insight:** The secure Dockerfile is not more complex -- it is more intentional. Every line has a purpose, and nothing unnecessary is included.
 
 ---
 
-### Step 3: Configure GitHub Secrets
+## Step 3: Understand the Trivy Security Policy
+
+Open `policies/trivy-policy.yaml`. This file defines the rules for the security gate:
+
+```yaml
+severity:
+  - CRITICAL
+  - HIGH
+exit-code: 1
+```
+
+This means: "If Trivy finds any CRITICAL or HIGH vulnerabilities, exit with code 1 (failure)." In the CI/CD pipeline, exit code 1 causes the job to fail, which blocks deployment.
+
+**PCI-DSS Requirement 6.3** states that organizations must identify, risk-rank, and address vulnerabilities in a timely manner. This policy file is the automated enforcement of that requirement. Instead of relying on humans to check for vulnerabilities (which is slow and error-prone), the pipeline does it automatically on every push.
+
+---
+
+## Step 4: Configure GitHub Secrets
 
 Your CI/CD pipeline needs credentials to push Docker images and deploy to EKS. In your forked repository on GitHub:
 
@@ -121,20 +153,20 @@ Your CI/CD pipeline needs credentials to push Docker images and deploy to EKS. I
 | `AWS_ACCESS_KEY_ID` | Your AWS access key ID |
 | `AWS_SECRET_ACCESS_KEY` | Your AWS secret access key |
 
-> **Tip:** For DockerHub, it is recommended to create an Access Token at [https://hub.docker.com/settings/security](https://hub.docker.com/settings/security) instead of using your password.
+> **Tip:** For DockerHub, it is recommended to create an Access Token at [https://hub.docker.com/settings/security](https://hub.docker.com/settings/security) instead of using your actual password. This is a security best practice.
 
 ---
 
-### Step 4: Update the Deployment Manifest
+## Step 5: Update Kubernetes Manifests
 
 Open `kubernetes/deployment.yaml` and replace the placeholder image name with your DockerHub username:
 
 ```yaml
 # Change this line:
-image: <your-dockerhub-username>/secure-app:latest
+image: <your-dockerhub-username>/vaultpay-gateway:latest
 
-# To this (example):
-image: johndoe/secure-app:latest
+# To this (use YOUR DockerHub username):
+image: johndoe/vaultpay-gateway:latest
 ```
 
 Commit the change:
@@ -146,53 +178,29 @@ git commit -m "Update deployment image to my DockerHub username"
 
 ---
 
-### Step 5: Push to Trigger the Pipeline (It Will Fail)
+## Step 6: Trigger the Pipeline (Watch It Fail!)
 
-Push your changes to the `main` branch:
+This is the "aha moment" of the lab. Push your changes to the `main` branch:
 
 ```bash
 git push origin main
 ```
 
-Now go to your repository on GitHub and click the **Actions** tab. You will see the **Container Security Scan & Deploy** workflow running.
+Now go to your repository on GitHub and click the **Actions** tab. You will see the **VaultPay Security Scan & Deploy** workflow running.
 
-**The pipeline will FAIL at the "Security Scan" job.** This is expected. The default `app/Dockerfile` uses the full `node:18` image, which contains many OS-level packages with known vulnerabilities. Trivy will detect HIGH and CRITICAL CVEs and exit with code 1, causing the job to fail.
+**The pipeline will FAIL at the "Security Scan" job.** This is expected and intentional!
 
----
+The default `app/Dockerfile` uses the full `node:18` image, which is based on Debian and contains hundreds of OS-level packages. Many of these packages have known vulnerabilities. Trivy detects them, finds CRITICAL and HIGH CVEs, and exits with code 1 -- blocking the deployment.
 
-### Step 6: Review the Trivy Scan Results
-
-Click on the failed workflow run, then click the **Security Scan** job, and expand the **Run Trivy vulnerability scanner** step.
-
-You will see a table like this in the logs:
-
-```
-┌──────────────────┬────────────────┬──────────┬────────────────────┬───────────────┬──────────────────────────────────────┐
-│     Library      │ Vulnerability  │ Severity │ Installed Version  │ Fixed Version │               Title                  │
-├──────────────────┼────────────────┼──────────┼────────────────────┼───────────────┼──────────────────────────────────────┤
-│ libssl3          │ CVE-2024-XXXXX │ CRITICAL │ 3.0.9-1            │ 3.0.13-1      │ openssl: some critical vulnerability │
-│ zlib1g           │ CVE-2023-XXXXX │ HIGH     │ 1:1.2.13-1         │ 1:1.2.13-2    │ zlib: buffer over-read               │
-└──────────────────┴────────────────┴──────────┴────────────────────┴───────────────┴──────────────────────────────────────┘
-```
-
-**How to read the table:**
-
-- **Library**: The OS package or library where the vulnerability was found.
-- **Vulnerability**: The CVE identifier. You can search for this on [https://nvd.nist.gov](https://nvd.nist.gov) for full details.
-- **Severity**: CRITICAL, HIGH, MEDIUM, or LOW. Our policy fails the pipeline on CRITICAL and HIGH.
-- **Installed Version**: The version currently in the image.
-- **Fixed Version**: The version that patches the vulnerability. If empty, no fix is available yet.
-- **Title**: A brief description of the vulnerability.
-
-The key takeaway: the full `node:18` Debian-based image ships with hundreds of system packages, many of which have known vulnerabilities. Most of these packages are not needed to run a Node.js application.
+This is exactly what the PCI-DSS auditor wants to see: vulnerable images are automatically prevented from reaching production.
 
 ---
 
-### Step 7: Fix the Vulnerability
+## Step 7: Fix the Vulnerability
 
-To fix the pipeline, update the workflow to use the secure Dockerfile instead of the vulnerable one.
+Now you will play the role of the DevSecOps engineer fixing the issue. Update the workflow to use the secure Dockerfile instead of the vulnerable one.
 
-Open `.github/workflows/security-scan.yml` and make the following changes in **both** the `scan` job and the `build-and-deploy` job.
+Open `.github/workflows/security-scan.yml` and change the build command in **both** the `scan` job and the `build-and-deploy` job.
 
 **In the `scan` job**, change the build step:
 
@@ -231,7 +239,7 @@ git commit -m "Switch to secure Dockerfile to pass Trivy scan"
 
 ---
 
-### Step 8: Push Again (Pipeline Passes)
+## Step 8: Push and Watch It Pass
 
 ```bash
 git push origin main
@@ -239,73 +247,141 @@ git push origin main
 
 Go to the **Actions** tab again. This time:
 
-1. The **Security Scan** job passes — Trivy finds far fewer (or zero) HIGH/CRITICAL vulnerabilities in the Alpine-based image.
-2. The **Build & Deploy to EKS** job runs — it pushes the image to DockerHub and deploys the application to your EKS cluster.
+1. The **Security Scan (PCI-DSS Gate)** job passes -- Trivy finds far fewer (or zero) HIGH/CRITICAL vulnerabilities in the Alpine-based image.
+2. The **Build & Deploy to EKS** job runs -- it pushes the image to DockerHub and deploys the VaultPay Payment Gateway to your EKS cluster.
+
+Congratulations -- VaultPay's pipeline now has an automated security gate that satisfies PCI-DSS Requirement 6.3!
 
 ---
 
-### Step 9: Verify the Deployment
+## Step 9: Verify Deployment
 
-Once the pipeline completes, verify that your application is running on EKS:
+Once the pipeline completes, verify that the VaultPay Payment Gateway is running on EKS:
 
 ```bash
 # Check that the pods are running
-kubectl get pods -n secure-app-ns
+kubectl get pods -n vaultpay-ns
 
 # Expected output (both pods should be Running and Ready):
-# NAME                          READY   STATUS    RESTARTS   AGE
-# secure-app-5d8f9b7c4f-abc12   1/1     Running   0          2m
-# secure-app-5d8f9b7c4f-def34   1/1     Running   0          2m
+# NAME                                READY   STATUS    RESTARTS   AGE
+# vaultpay-gateway-5d8f9b7c4f-abc12   1/1     Running   0          2m
+# vaultpay-gateway-5d8f9b7c4f-def34   1/1     Running   0          2m
 ```
 
 ```bash
 # Check the service and get the external URL
-kubectl get svc -n secure-app-ns
+kubectl get svc -n vaultpay-ns
 
 # Expected output:
-# NAME                 TYPE           CLUSTER-IP      EXTERNAL-IP                              PORT(S)        AGE
-# secure-app-service   LoadBalancer   10.100.45.123   a1b2c3-1234567890.us-east-1.elb.amazonaws.com   80:31234/TCP   3m
+# NAME               TYPE           CLUSTER-IP      EXTERNAL-IP                                      PORT(S)        AGE
+# vaultpay-service   LoadBalancer   10.100.45.123   a1b2c3-123456.us-east-1.elb.amazonaws.com        80:31234/TCP   3m
 ```
 
-Wait a minute or two for the LoadBalancer to provision, then test the endpoints:
-
-```bash
-# Replace <EXTERNAL-IP> with the EXTERNAL-IP from the output above
-curl http://<EXTERNAL-IP>/health
-# {"status":"healthy","timestamp":"2026-03-24T12:00:00.000Z","uptime":120}
-
-curl http://<EXTERNAL-IP>/products
-# [{"id":1,"name":"Laptop","price":999.99,"category":"Electronics"}, ...]
-```
+Wait a minute or two for the LoadBalancer to provision.
 
 ---
 
-### Step 10: Verify Prometheus Monitoring
+## Step 10: Explore the Running Application
 
-If you have Prometheus deployed in your EKS cluster (from a prior lab), the ServiceMonitor will automatically configure scraping.
+Replace `<EXTERNAL-IP>` with the EXTERNAL-IP from the previous step.
+
+**Health Check:**
 
 ```bash
-# Check that the ServiceMonitor was created
-kubectl get servicemonitor -n secure-app-ns
-
-# Expected output:
-# NAME                 AGE
-# secure-app-monitor   5m
+curl http://<EXTERNAL-IP>/health
 ```
 
-Access the metrics endpoint directly to confirm it is working:
+```json
+{
+  "service": "VaultPay Payment Gateway",
+  "status": "healthy",
+  "timestamp": "2026-03-26T12:00:00.000Z",
+  "version": "1.0.0"
+}
+```
+
+**List Transactions:**
+
+```bash
+curl http://<EXTERNAL-IP>/api/transactions
+```
+
+This returns 10 sample transactions with masked card numbers (e.g., `****-****-****-4532`), merchant names, amounts, and statuses.
+
+**Get a Single Transaction:**
+
+```bash
+curl http://<EXTERNAL-IP>/api/transactions/txn-a1b2c3d4
+```
+
+**Process a New Transaction:**
+
+```bash
+curl -X POST http://<EXTERNAL-IP>/api/transactions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardNumber": "4111-1111-1111-1111",
+    "merchant": "Test Merchant",
+    "amount": 29.99,
+    "currency": "USD"
+  }'
+```
+
+The response includes a unique transaction ID, and the card number is automatically masked for PCI-DSS compliance.
+
+**Prometheus Metrics:**
 
 ```bash
 curl http://<EXTERNAL-IP>/metrics
 ```
 
-You should see Prometheus-format metrics including `http_requests_total` and various default Node.js metrics.
+You will see metrics including `http_requests_total`, `transactions_processed_total`, and `http_request_duration_seconds`.
 
-If you have access to the Prometheus UI or Grafana, you can query:
+---
 
-```promql
-http_requests_total{app="secure-app"}
+## Understanding Trivy Scan Results
+
+When Trivy scans an image, it produces a table like this:
+
 ```
++-----------+----------------+----------+-------------------+--------------+-------------------------------+
+|  Library  | Vulnerability  | Severity | Installed Version | Fixed Version|            Title              |
++-----------+----------------+----------+-------------------+--------------+-------------------------------+
+| libssl3   | CVE-2024-XXXXX | CRITICAL | 3.0.9-1           | 3.0.13-1     | openssl: buffer overflow      |
+| zlib1g    | CVE-2023-XXXXX | HIGH     | 1:1.2.13-1        | 1:1.2.13-2   | zlib: heap corruption         |
+| curl      | CVE-2024-XXXXX | MEDIUM   | 7.88.1-1          | 7.88.1-2     | curl: cookie leak             |
++-----------+----------------+----------+-------------------+--------------+-------------------------------+
+```
+
+**How to read each column:**
+
+| Column | What It Means | Real-World Analogy |
+|--------|--------------|-------------------|
+| **Library** | The OS package or software library where the vulnerability lives. | Which part of the car has the defect. |
+| **Vulnerability** | The CVE identifier (e.g., CVE-2024-12345). You can look this up at [nvd.nist.gov](https://nvd.nist.gov). | The recall notice number from the manufacturer. |
+| **Severity** | How dangerous it is: CRITICAL, HIGH, MEDIUM, or LOW. | CRITICAL = brakes might fail; LOW = paint might chip. |
+| **Installed Version** | The version currently in your image. | The part currently in your car. |
+| **Fixed Version** | The version that patches the vulnerability. If empty, no fix exists yet. | The replacement part from the manufacturer. |
+| **Title** | A short description of what could go wrong. | What the recall notice says the defect might cause. |
+
+**Our policy blocks CRITICAL and HIGH.** That means even if there are MEDIUM and LOW findings, the pipeline still passes. This is a deliberate tradeoff -- blocking everything would make it nearly impossible to deploy, while blocking nothing would leave production exposed.
+
+---
+
+## PCI-DSS Compliance Checklist
+
+This table maps specific PCI-DSS requirements to what you implemented in this lab:
+
+| PCI-DSS Requirement | Description | What You Did |
+|---------------------|-------------|-------------|
+| **2.2.5** | Remove all unnecessary functionality | Used Alpine base image; installed only production dependencies |
+| **3.4** | Render PAN unreadable anywhere it is stored | Card numbers are masked (`****-****-****-4532`) in the API |
+| **6.3.1** | Identify security vulnerabilities | Integrated Trivy to scan for CVEs on every push |
+| **6.3.2** | Assign risk rankings to vulnerabilities | Trivy categorizes findings as CRITICAL, HIGH, MEDIUM, LOW |
+| **6.3.3** | Install patches within defined timeframe | Pipeline blocks deployment until vulnerabilities are fixed |
+| **7.1** | Limit access to those who need it | Container runs as non-root user `vaultpay`; capabilities dropped |
+| **10.6** | Review logs and security events | Prometheus metrics and health checks provide observability |
+| **11.3** | Perform vulnerability scans | Trivy runs automatically in CI/CD on every code change |
 
 ---
 
@@ -315,7 +391,7 @@ When you are finished with the lab, remove the deployed resources:
 
 ```bash
 # Delete all resources in the namespace
-kubectl delete namespace secure-app-ns
+kubectl delete namespace vaultpay-ns
 ```
 
 This removes the Deployment, Service, ServiceMonitor, and the namespace itself.
@@ -328,33 +404,32 @@ This removes the Deployment, Service, ServiceMonitor, and the namespace itself.
 
 ```
 container-security-lab/
-├── README.md                          # This guide
+├── README.md                              # This guide
+├── .gitignore                             # Files to exclude from version control
 ├── .github/workflows/
-│   └── security-scan.yml             # CI/CD pipeline with Trivy scanning
+│   └── security-scan.yml                 # CI/CD pipeline with Trivy scanning
 ├── app/
-│   ├── server.js                     # Express.js application
-│   ├── package.json                  # Node.js dependencies
-│   └── Dockerfile                    # Default Dockerfile (full node:18 image — triggers Trivy failures)
+│   ├── server.js                         # VaultPay Payment Gateway API (Express.js)
+│   ├── package.json                      # Node.js dependencies
+│   └── Dockerfile                        # Default Dockerfile (triggers Trivy failures)
 ├── docker/
-│   ├── Dockerfile.vulnerable         # Bad example: node:14, root user, no health check
-│   └── Dockerfile.secure             # Good example: node:18-alpine, non-root, health check
+│   ├── Dockerfile.vulnerable             # Bad example: node:14, root user, no health check
+│   └── Dockerfile.secure                 # Good example: node:18-alpine, non-root, health check
 ├── kubernetes/
-│   ├── namespace.yaml                # Namespace: secure-app-ns
-│   ├── deployment.yaml               # 2-replica deployment with probes and resource limits
-│   ├── service.yaml                  # LoadBalancer service (port 80 -> 3000)
-│   └── servicemonitor.yaml           # Prometheus ServiceMonitor
+│   ├── namespace.yaml                    # Namespace: vaultpay-ns (PCI-DSS labeled)
+│   ├── deployment.yaml                   # 2-replica deployment with security context
+│   ├── service.yaml                      # LoadBalancer service (port 80 -> 3000)
+│   └── servicemonitor.yaml               # Prometheus ServiceMonitor (scrapes /metrics)
 └── policies/
-    └── trivy-policy.yaml             # Trivy scan policy (fail on HIGH/CRITICAL)
+    └── trivy-policy.yaml                 # Trivy scan policy (fail on HIGH/CRITICAL)
 ```
 
 ---
 
-## What You Learned
+## What's Next?
 
-- **Container images carry risk.** Even official images from Docker Hub contain OS packages with known vulnerabilities. Scanning is not optional.
-- **Alpine images reduce attack surface.** Switching from a full Debian-based image to Alpine eliminates hundreds of unnecessary packages and their associated CVEs.
-- **Never run as root.** A non-root user inside a container limits the blast radius if the application is compromised.
-- **Security gates belong in CI/CD.** By running Trivy before deployment, you prevent vulnerable images from ever reaching production.
-- **Trivy is straightforward to integrate.** A single GitHub Actions step can scan an image and fail the pipeline based on severity thresholds.
-- **Health checks and resource limits are part of security.** They prevent denial-of-service scenarios and enable the orchestrator to maintain application availability.
-- **Prometheus monitoring provides visibility.** Observability into your application helps detect anomalous behavior that could indicate a security incident.
+Now that you have secured VaultPay's container pipeline, continue building your cloud security skills with these related labs:
+
+- **[cloud-migration-infra](https://github.com/anmutetech/cloud-migration-infra)** -- Infrastructure as Code with Terraform for EKS
+- **[monitoring-stack](https://github.com/anmutetech/monitoring-stack)** -- Set up Prometheus and Grafana for full observability
+- **[gitops-lab](https://github.com/anmutetech/gitops-lab)** -- Implement GitOps with ArgoCD for automated Kubernetes deployments

@@ -1,20 +1,54 @@
-# Trivy security scanning policy configuration
+# =============================================================================
+# Trivy Security Scanning Policy — VaultPay Payment Gateway
+# =============================================================================
+#
 # This policy defines the severity threshold for the CI/CD pipeline.
-# The pipeline will fail (exit code 1) if any HIGH or CRITICAL vulnerabilities are found.
+# It is the automated enforcement mechanism for PCI-DSS Requirement 6.3:
+#
+#   "Vulnerabilities are identified and addressed in a timely manner."
+#
+# Specifically:
+#   - PCI-DSS 6.3.1: Security vulnerabilities are identified using recognized
+#     industry sources for security vulnerability information.
+#   - PCI-DSS 6.3.2: Vulnerabilities are assigned a risk ranking based on
+#     industry best practices and consideration of potential impact.
+#   - PCI-DSS 6.3.3: Patches/updates for critical and high-risk vulnerabilities
+#     are installed within a defined timeframe.
+#
+# How this policy works:
+#   Trivy scans the container image for known vulnerabilities (CVEs) and
+#   misconfiguration issues. If any CRITICAL or HIGH severity findings
+#   exist, the scan exits with code 1, which causes the CI/CD pipeline
+#   to fail. This prevents the image from being pushed to the registry
+#   or deployed to production.
+#
+# Think of it like airport security: no container gets through to
+# production without passing the scanner first.
+# =============================================================================
 
+# Fail the scan if any vulnerabilities of these severities are found.
+# CRITICAL = actively exploitable, often with public exploits available.
+# HIGH = serious vulnerabilities that should be fixed before deployment.
 severity:
   - CRITICAL
   - HIGH
 
+# Exit code 1 causes the CI/CD job to fail, blocking deployment.
+# This is the "gate" that prevents vulnerable containers from reaching
+# production — a core PCI-DSS compliance requirement.
 exit-code: 1
 
-# Ignore unfixed vulnerabilities (optional — set to true if you only want actionable results)
+# When set to false, Trivy reports ALL vulnerabilities — even those
+# without an available fix yet. This gives full visibility into risk.
+# Set to true if you only want to see vulnerabilities you can act on.
 ignore-unfixed: false
 
-# Output format for the scan results
+# Output format — "table" is human-readable and easy to review in CI logs.
 format: table
 
-# Scan target types
+# What to check:
+#   - vuln: OS packages and application library vulnerabilities (CVEs)
+#   - config: Dockerfile and Kubernetes manifest misconfigurations
 security-checks:
   - vuln
   - config

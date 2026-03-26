@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: secure-app-ns
+  name: vaultpay-ns
   labels:
-    app: secure-app
-    purpose: security-lab
+    app: vaultpay
+    compliance: pci-dss

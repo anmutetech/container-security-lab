@@ -1,4 +1,19 @@
-name: Container Security Scan & Deploy
+# =============================================================================
+# VaultPay Payment Gateway — Container Security Scan & Deploy
+# =============================================================================
+# This pipeline enforces PCI-DSS Requirement 6.3 by scanning every container
+# image for known vulnerabilities BEFORE it can be pushed to the registry or
+# deployed to production.
+#
+# Two jobs:
+#   1. scan           — Build the image and run Trivy. If HIGH or CRITICAL
+#                       CVEs are found, the job fails and deployment is blocked.
+#                       This is the PCI-DSS compliance gate.
+#   2. build-and-deploy — Only runs if the scan passes AND the push is to main.
+#                       Pushes the image to DockerHub and deploys to EKS.
+# =============================================================================
+
+name: VaultPay Security Scan & Deploy
 
 on:
   push:
@@ -7,22 +22,35 @@ on:
     branches: [main]
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/secure-app
+  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/vaultpay-gateway
   IMAGE_TAG: ${{ github.sha }}
   EKS_CLUSTER: migration-eks-cluster
   AWS_REGION: us-east-1
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Security Scan — PCI-DSS Compliance Gate
+  # ---------------------------------------------------------------------------
+  # This job is the "security checkpoint." Think of it like a metal detector
+  # at an airport — no container gets through to production without passing
+  # the scanner first.
+  # ---------------------------------------------------------------------------
   scan:
-    name: Security Scan
+    name: Security Scan (PCI-DSS Gate)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Build the Docker image using the default Dockerfile in app/.
+      # On the first run this will use the INSECURE Dockerfile and Trivy
+      # will block it. Students will then switch to docker/Dockerfile.secure.
       - name: Build Docker image
         run: docker build -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f app/Dockerfile ./app
 
+      # PCI-DSS 6.3.1: Identify vulnerabilities using industry sources (NVD/CVE).
+      # PCI-DSS 6.3.2: Assign risk rankings (Trivy maps to CRITICAL/HIGH/MEDIUM/LOW).
+      # PCI-DSS 6.3.3: Block deployment until critical/high findings are resolved.
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
@@ -32,6 +60,13 @@ jobs:
           severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
 
+  # ---------------------------------------------------------------------------
+  # Job 2: Build & Deploy — only runs after scan passes
+  # ---------------------------------------------------------------------------
+  # This job depends on the scan job. If Trivy found vulnerabilities, this
+  # job never runs. This is how we guarantee that only scanned, approved
+  # images reach production — a core PCI-DSS requirement.
+  # ---------------------------------------------------------------------------
   build-and-deploy:
     name: Build & Deploy to EKS
     runs-on: ubuntu-latest
@@ -73,5 +108,5 @@ jobs:
           kubectl apply -f kubernetes/deployment.yaml
           kubectl apply -f kubernetes/service.yaml
           kubectl apply -f kubernetes/servicemonitor.yaml
-          kubectl -n secure-app-ns set image deployment/secure-app secure-app=${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          kubectl -n secure-app-ns rollout status deployment/secure-app --timeout=120s
+          kubectl -n vaultpay-ns set image deployment/vaultpay-gateway vaultpay-gateway=${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          kubectl -n vaultpay-ns rollout status deployment/vaultpay-gateway --timeout=120s

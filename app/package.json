@@ -1,7 +1,7 @@
 {
-  "name": "secure-app",
+  "name": "vaultpay-gateway",
   "version": "1.0.0",
-  "description": "A simple Express.js application for container security scanning lab",
+  "description": "VaultPay Payment Gateway API for container security scanning lab",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,6 +9,8 @@
   "dependencies": {
     "express": "^4.18.2",
     "prom-client": "^15.1.0",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "uuid": "^9.0.0"
   }
 }

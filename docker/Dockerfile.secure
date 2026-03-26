@@ -1,37 +1,57 @@
-# SECURE Dockerfile - Production-ready best practices
-#
-# Security measures applied:
-# 1. Uses a minimal Alpine-based image to reduce attack surface
-# 2. Creates and runs as a non-root user
-# 3. Includes a health check for container orchestration
-# 4. Uses multi-stage-friendly layer ordering for efficient caching
-# 5. Only copies necessary files
+# =============================================================================
+# SECURE Dockerfile — Production-ready, PCI-DSS compliant
+# =============================================================================
+# This Dockerfile follows container security best practices and satisfies
+# the PCI-DSS requirements that the vulnerable Dockerfile violates.
+# =============================================================================
 
+# GOOD: Alpine-based image contains only essential OS packages, which
+# dramatically reduces the number of potential CVEs. Node 18 is an
+# actively maintained LTS release that receives regular security patches.
+# PCI-DSS Requirement 6.3.3: "Install critical patches within one month."
+# Alpine images make this achievable because there are far fewer packages
+# to patch in the first place.
 FROM node:18-alpine
 
-# Create a non-root user and group
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# GOOD: Create a dedicated non-root user and group for the application.
+# The container process will run as this user instead of root.
+# PCI-DSS Requirement 7.1: "Limit access to only those who need it."
+# Even if an attacker compromises the app, they cannot escalate to root.
+RUN addgroup -S vaultpay && adduser -S vaultpay -G vaultpay
 
 WORKDIR /app
 
-# Copy dependency manifest first for better layer caching
+# GOOD: Copy only the dependency manifest first. This takes advantage of
+# Docker layer caching — dependencies are only re-installed when
+# package.json changes, not on every code change.
 COPY app/package.json .
 
-# Install production dependencies only
+# GOOD: Install production dependencies only and clean the npm cache.
+# This excludes devDependencies (test frameworks, linters) that add
+# unnecessary code and potential vulnerabilities.
+# PCI-DSS Requirement 2.2.5: "Remove all unnecessary functionality."
 RUN npm install --only=production && npm cache clean --force
 
-# Copy application source code
+# GOOD: Copy only the application source file — nothing else.
+# No .env files, no documentation, no test fixtures.
+# PCI-DSS Requirement 3.4: "Render PAN unreadable anywhere it is stored."
+# Minimizing what goes into the image reduces the risk of accidentally
+# including sensitive data in a container layer.
 COPY app/server.js .
 
-# Change ownership of app files to non-root user
-RUN chown -R appuser:appgroup /app
+# GOOD: Ensure the non-root user owns all application files.
+RUN chown -R vaultpay:vaultpay /app
 
-# Switch to non-root user
-USER appuser
+# GOOD: Switch to the non-root user for all subsequent commands and
+# for the running container process.
+USER vaultpay
 
 EXPOSE 3000
 
-# Add health check
+# GOOD: Health check allows Docker and Kubernetes to detect if the
+# application is unresponsive and automatically restart the container.
+# PCI-DSS Requirement 10.6: "Review logs and security events regularly."
+# Health checks feed into monitoring and alerting systems.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 
